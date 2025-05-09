@@ -12,7 +12,7 @@ if(isset($_POST['boloInfo']) && !empty($_POST['boloInfo']) && $_POST['random'] !
 }
 
 if(isset($_POST['boid']) && !empty($_POST['boid']) && $_POST['random'] != $_SESSION['arrandom']) {
-	$cbolo = cancelBolo($_POST['boid']);
+	cancelBolo($_POST['boid']);
 	$_SESSION['arrandom'] = $_POST['random'];
 }
 

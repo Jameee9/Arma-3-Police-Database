@@ -1,7 +1,48 @@
 <?php
+declare(strict_types=1);
+
 require_once("php_includes/base.inc.php");
-logout();
-redirect("index.php");
+
+// Clear remember me cookie if it exists
+if (isset($_COOKIE['r'])) {
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("DELETE FROM remember WHERE hash = :hash");
+        $hash = hash("sha256", $_COOKIE['r']);
+        $stmt->bindParam(":hash", $hash);
+        $stmt->execute();
+    } catch (PDOException $e) {
+        error_log("Failed to clear remember me token: " . $e->getMessage());
+    }
+    
+    setcookie('r', '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'secure' => true,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+// Clear all session data
+$_SESSION = [];
+
+// Destroy the session cookie
+if (isset($_COOKIE[session_name()])) {
+    setcookie(session_name(), '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'secure' => true,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+// Destroy the session
+session_destroy();
+
+// Redirect to login page
+redirect("login.php");
 
 $cminfo = getInfo("cminfo");
 $cminfo = json_decode($cminfo['data'], true);

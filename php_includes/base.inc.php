@@ -1,5 +1,44 @@
 <?php
-require('db.php');
+declare(strict_types=1);
+
+// Error reporting for development
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+ini_set('display_startup_errors', '1');
+
+// Start session with secure settings
+if (session_status() === PHP_SESSION_NONE) {
+    $sessionOptions = [
+        'cookie_httponly' => true,
+        'cookie_secure' => true,
+        'cookie_samesite' => 'Lax',
+        'use_strict_mode' => true
+    ];
+    
+    if (session_start($sessionOptions) === false) {
+        die('Failed to start session');
+    }
+}
+
+// Security headers
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Content-Security-Policy: default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\' https:; style-src \'self\' \'unsafe-inline\' https:; img-src \'self\' data: https:; font-src \'self\' https:;');
+
+require_once("db.php");
+require_once("query.php");
+
+/**
+ * Get database connection
+ * 
+ * @return PDO
+ */
+function getDB(): PDO {
+    global $pdo;
+    return $pdo;
+}
 
 /* <---UNCOMMENT BELOW IF YOU USE SSL--->
 if(!isset($_SERVER['HTTPS']) && !strstr($_SERVER["HTTP_CF_VISITOR"], "https")) {
@@ -8,8 +47,12 @@ if(!isset($_SERVER['HTTPS']) && !strstr($_SERVER["HTTP_CF_VISITOR"], "https")) {
 }
 */
 
-if(isset($_SERVER["HTTP_CF_CONNECTING_IP"])) $_SERVER['REMOTE_ADDR'] = $_SERVER["HTTP_CF_CONNECTING_IP"];
+// Handle Cloudflare IP
+if (isset($_SERVER["HTTP_CF_CONNECTING_IP"])) {
+    $_SERVER['REMOTE_ADDR'] = $_SERVER["HTTP_CF_CONNECTING_IP"];
+}
 
+// Constants
 define('U_ID', 0);
 define('U_UNAME', 1);
 define('U_DNAME', 2);
@@ -37,89 +80,111 @@ define('YEAR', 31556926);
 /*require( 'php_error.php' );
 \php_error\reportErrors();*/
 
-session_start();
+// Initialize user state
 $luser = 0;
-if(isLoggedIn()) {
-	$luser = getUser($_SESSION['uid'], U_ID);
-	$_SESSION['uname'] = $luser['uname'];
-	if(time()-$_SESSION['ll'] > HOUR*6) $pdo->exec("UPDATE `users` SET `LastLogin` = NOW() WHERE `id` = '$luser[id]'");
-} else checkRem();
+if (isLoggedIn()) {
+    $luser = getUser($_SESSION['uid'], U_ID);
+    $_SESSION['uname'] = $luser['uname'];
+    if (time() - $_SESSION['ll'] > HOUR * 6) {
+        $pdo = getDB();
+        $pdo->exec("UPDATE `users` SET `LastLogin` = NOW() WHERE `id` = :id");
+    }
+} else {
+    checkRem();
+}
 
 $_SESSION['ll'] = time();
 
-function redirect($url, $time = 0) {
-	echo "<META http-equiv=\"refresh\" content=\"$time;URL=$url\">";
+/**
+ * Redirect to a URL
+ */
+function redirect(string $url): void {
+    header("Location: $url");
+    exit();
 }
 
-function remember($uid) {
-	global $pdo;
-	$str = genSalt(20);
-	$stmt = $pdo->prepare("DELETE FROM `remember` WHERE `uid` = :id");
-	$stmt->bindParam(":id", $uid);
-	$stmt->execute();
-	setcookie("r", $str, strtotime('+2 week'), "/");
-	$str = hash("sha256", $str);
-	$stmt = $pdo->prepare("INSERT INTO `remember` (`uid`, `hash`, `expire`, `ip`) VALUES (:uid, :hash, NOW() + INTERVAL 2 WEEK, :ip)");
-	$stmt->bindParam(":uid", $uid);
-	$stmt->bindParam(":hash", $str);
-	$stmt->bindParam(":ip", $_SERVER['REMOTE_ADDR']);
-	$stmt->execute();
-	return $stmt->rowCount();
+/**
+ * Check if user is logged in
+ */
+function isLoggedIn(): bool {
+    return isset($_SESSION['uid']) && !empty($_SESSION['uid']);
 }
 
-function checkRem() {
-	global $pdo;
-	if(isset($_COOKIE['r'])) {
-		$rem = hash("sha256", $_COOKIE['r']);
-		$stmt = $pdo->prepare("SELECT * from `remember` WHERE `hash` = :hash");
-		$stmt->bindParam(":hash", $rem);
-		$stmt->execute();
-		
-		if(!$stmt->rowCount()) return false;
-		
-		$res = $stmt->fetch();
-		
-		if($res['ip'] != $_SERVER['REMOTE_ADDR']) {
-			forget();
-			return false;
-		}
-		
-		$usr = getUser($res['uid'], U_ID);
-		
-		$_SESSION['uname'] = $usr['uname'];
-		$_SESSION['uid'] = $usr['id'];
-		$_SESSION['perms'] = $usr['plevel'];
-		$_SESSION['ip'] = $_SERVER['REMOTE_ADDR'];
-		$pdo->exec("UPDATE `users` SET `LastLogin` = NOW(), `ip` = '$_SERVER[REMOTE_ADDR]' WHERE `id` = '$usr[id]'");
-	} else return false;
-	return true;
+/**
+ * Check if user has remember me cookie
+ */
+function checkRem(): bool {
+    if (!isset($_COOKIE['r'])) {
+        return false;
+    }
+    
+    try {
+        $pdo = getDB();
+        $hash = hash("sha256", $_COOKIE['r']);
+        $stmt = $pdo->prepare("SELECT uid FROM remember WHERE hash = :hash AND expire > NOW()");
+        $stmt->bindParam(":hash", $hash);
+        $stmt->execute();
+        
+        if ($stmt->rowCount() > 0) {
+            $row = $stmt->fetch();
+            $_SESSION['uid'] = $row['uid'];
+            return true;
+        }
+    } catch (PDOException $e) {
+        error_log("Remember me check failed: " . $e->getMessage());
+    }
+    
+    return false;
 }
 
-function forget() {
-	global $pdo;
-	$stmt = $pdo->prepare("DELETE FROM `remember` WHERE `hash` = :hash");
-	$stmt->bindParam(":hash", hash("sha256", $_COOKIE['r']));
-	$stmt->execute();
-	setcookie("r", "", 1, "/");
+/**
+ * Handle user login
+ */
+function login(string $username, string $password, bool $remember = false): int {
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("SELECT id, password FROM users WHERE username = :username");
+        $stmt->bindParam(":username", $username);
+        $stmt->execute();
+        
+        if ($stmt->rowCount() === 0) {
+            return 1; // Invalid username
+        }
+        
+        $row = $stmt->fetch();
+        if (!password_verify($password, $row['password'])) {
+            return 2; // Invalid password
+        }
+        
+        $_SESSION['uid'] = $row['id'];
+        
+        if ($remember) {
+            $token = bin2hex(random_bytes(32));
+            $hash = hash("sha256", $token);
+            $expire = date('Y-m-d', strtotime('+30 days'));
+            
+            $stmt = $pdo->prepare("INSERT INTO remember (uid, hash, expire, ip) VALUES (:uid, :hash, :expire, :ip)");
+            $stmt->bindParam(":uid", $row['id']);
+            $stmt->bindParam(":hash", $hash);
+            $stmt->bindParam(":expire", $expire);
+            $stmt->bindParam(":ip", $_SERVER['REMOTE_ADDR']);
+            $stmt->execute();
+            
+            setcookie('r', $token, strtotime('+30 days'), '/', '', true, true);
+        }
+        
+        return 0; // Success
+    } catch (PDOException $e) {
+        error_log("Login failed: " . $e->getMessage());
+        return 3; // Database error
+    }
 }
 
-function is_session_started() {
-	if ( php_sapi_name() !== 'cli' ) {
-		if ( version_compare(phpversion(), '5.4.0', '>=') ) {
-			return session_status() === PHP_SESSION_ACTIVE ? TRUE : FALSE;
-		} else {
-			return session_id() === '' ? FALSE : TRUE;
-		}
-	}
-	return FALSE;
-}
-
-function isLoggedIn() {
-	return isset($_SESSION['uid']) && !empty($_SESSION['uid']);
-}
-
-function antiXSS($str) {
-	return htmlspecialchars(strip_tags(urldecode($str)));
+/**
+ * Sanitize input against XSS
+ */
+function antiXSS(string $str): string {
+    return htmlspecialchars(strip_tags(urldecode($str)), ENT_QUOTES, 'UTF-8');
 }
 
 function showAlert($txt, $type = A_INFO) {
@@ -189,14 +254,14 @@ function hasPerm($permname) {
 	$stmt = $pdo->prepare("SELECT `plevel`,`dept`,`rank` FROM `users` WHERE `id` = :name");
 	$stmt->bindParam(":name", $_SESSION['uid']);
 	$stmt->execute();
-	if(isset($debug)) echo 'Init: '.var_dump($stmt->count());
+	if(isset($debug)) echo 'Init: '.var_dump($stmt->rowCount());
 	$res = $stmt->fetch();
 	$stmt->closeCursor();
 	// GET DEPARTMENT DATA / FETCH
 	$stmt = $pdo->prepare("SELECT `perms`,`info` FROM `dept` WHERE `id` = :dept");
 	$stmt->bindParam(":dept", $res['dept']);
 	$stmt->execute();
-	if(isset($debug)) echo ' Init2: '.var_dump($stmt->count());
+	if(isset($debug)) echo ' Init2: '.var_dump($stmt->rowCount());
 	$dp = $stmt->fetch();
 	$stmt->closeCursor();
 
@@ -285,18 +350,18 @@ function processRequest($rid) {
 	return $rc;
 }
 
-function genSalt($length = 10) {
-	$characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-	$charactersLength = strlen($characters);
-	$randomString = '';
-	for ($i = 0; $i < $length; ++$i) {
-		$randomString .= $characters[rand(0, $charactersLength - 1)];
-	}
-	return $randomString;
+/**
+ * Generate random salt
+ */
+function genSalt(int $length = 10): string {
+    return bin2hex(random_bytes($length));
 }
 
-function hashPass($pass, $salt) {
-	return md5(md5($pass).$salt);
+/**
+ * Hash password with salt
+ */
+function hashPass(string $pass, string $salt): string {
+    return hash('sha256', $pass . $salt);
 }
 
 function getCiv($name, $method = U_DNAME) {
@@ -532,9 +597,10 @@ function updateExpunged($arid) {
 	global $pdo;
 	$cop = getUser($_SESSION['uid'], U_ID);
 	$me = $_SESSION['uid'];
+	$currentDate = date("Y-m-d");
 	$stmt = $pdo->prepare("UPDATE `arrests` SET `exp` = $me, `dojid` = :dojid, `date` = :date WHERE `id` = :id");
 	$stmt->bindParam(":id", $arid);
-	$stmt->bindParam(":date", date("Y-m-d"));
+	$stmt->bindParam(":date", $currentDate);
 	$stmt->bindParam(":dojid", $cop['id']);
 	$stmt->execute();
 }
@@ -589,34 +655,24 @@ function regUser($uname, $disname, $pass, $email) {
 	return 4;
 }
 
-/*
-* LOGIN RETURN VALUES
-* false = SUCCESS
-* 1 = USER DOES NOT EXIST
-* 2 = PASSWORD INCORRECT
-*/
-function login($uname, $pass, $rem = true) {
-	global $pdo;
-	
-	$usr = getUser($uname, U_UNAME);
-	if(!$usr) return 1;
-	if($usr['phash'] != hashPass($pass, $usr['salt'])) return 2;
-	$pdo->exec("UPDATE `users` SET `LastLogin` = NOW(), `ip` = '$_SERVER[REMOTE_ADDR]' WHERE `id` = '$usr[id]'");
-	$_SESSION['uname'] = $usr['uname'];
-	$_SESSION['uid'] = $usr['id'];
-	$_SESSION['perms'] = $usr['plevel'];
-	$_SESSION['ip'] = $_SERVER['REMOTE_ADDR'];
-	if($rem) remember($_SESSION['uid']);
-	/*logAction($usr['id'], -1, L_LOGIN, null);*/
-	return false;
-}
-
-function logout() {
-	if(isset($_COOKIE['r'])) forget();
-	if(is_session_started()) {
-		session_unset();
-		session_destroy();
-	}
+/**
+ * Logout user
+ */
+function logout(): void {
+    if (isset($_COOKIE['r'])) {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("DELETE FROM remember WHERE hash = :hash");
+        $hash = hash("sha256", $_COOKIE['r']);
+        $stmt->bindParam(":hash", $hash);
+        $stmt->execute();
+        
+        setcookie("r", "", time() - 3600, '/', '', true, true);
+    }
+    
+    if (is_session_started()) {
+        $_SESSION = array();
+        session_destroy();
+    }
 }
 
 function setUData($newVal, $type = -1, $uid = 0) {
@@ -743,28 +799,44 @@ function titleFormat($str) {
 	return str_replace(Array(" Of ", " A ", " In ", " An ", " To ", " On "), Array(" of ", " a ", " in ", " an ", " to ", " on "), $str);
 }
 
-function getInfo($col) {
-	global $pdo;
-	$stmt = $pdo->prepare("SELECT `data` FROM `info` WHERE `name` = :name");
-	$stmt->bindParam(":name", $col);
-	$stmt->execute();
-	if(!$stmt->rowCount()) return false;
-	return $stmt->fetch();
+/**
+ * Get system information
+ * 
+ * @param string $name
+ * @return array|null
+ */
+function getInfo(string $name): ?array {
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("SELECT * FROM info WHERE name = :name");
+        $stmt->bindParam(":name", $name);
+        $stmt->execute();
+        return $stmt->fetch() ?: null;
+    } catch (PDOException $e) {
+        error_log("Failed to get info: " . $e->getMessage());
+        return null;
+    }
 }
 
-function setInfo($col, $data) {
-	global $pdo;
-	$stmt = $pdo->prepare("UPDATE `info` SET `data` = :data WHERE `name` = :col");
-	$stmt->bindParam(":data", $data);
-	$stmt->bindParam(":col", $col);
-	$stmt->execute();
-	return $stmt->rowCount();
+/**
+ * Update system information
+ * 
+ * @param string $name
+ * @param string $data
+ * @return bool
+ */
+function updateInfo(string $name, string $data): bool {
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("UPDATE info SET data = :data WHERE name = :name");
+        $stmt->bindParam(":name", $name);
+        $stmt->bindParam(":data", $data);
+        return $stmt->execute();
+    } catch (PDOException $e) {
+        error_log("Failed to update info: " . $e->getMessage());
+        return false;
+    }
 }
-
-/*function setDept($uid, $dept) {
-	global $pdo;
-	$stmt = $pdo->prepare(
-}*/
 
 function fireMember($uid, $log = true) {
 	global $pdo;
@@ -830,44 +902,65 @@ function isCop($scrit, $sval = U_DNAME) {
 	return true;
 }
 
-/*function formatLog($logid) {
-	global $pdo;
-	$details = "";
-	switch($acid) {
-		case L_TERM:
-		$details = "%s(UID: %d) terminated %s(UID: %d) from %s";
-		break;
-		case L_PRODEMO:
-		$details = "%s(UID: %d) promoted %s(UID: %d) to %s in %s";
-		break;
-		case L_TRANS:
-		$details = "%s(UID: %d) transferred %s(UID: %d) from %s to %s";
-		break;
-		case L_LOGIN:
-		$details = '%s(UID: %d) has logged in from IP %s';
-		break;
-		case L_EXP:
-		$details = '%s(UID: %d) has expunged %s(UID: %d)\'s records';
-		break;
-		default:
-		$details = '%s(UID: %d) has triggered an unknown log action';
-		break;
-	}
-}*/
-
-/*
-function logAction($uid, $oid, $acid, $infoarr) {
-	global $pdo;
-	if($uid == null) $uid = $_SESSION['uid'];
-	$stmt = $pdo->prepare('INSERT INTO `logs` (`uid`, `oid`, `uip`, `time`, `action`, `detaildata`) VALUES (:uid, :oid, \''.$_SERVER['REMOTE_ADDR'].'\', '.time().', :acid, :djson)');
-	$stmt->bindParam(':uid', $uid);
-	$stmt->bindParam(':oid', $oid);
-	$stmt->bindParam(':acid', $acid);
-	$stmt->bindParam(':djson', $infoarr);
-	$stmt->execute();
-	return $stmt->rowCount();
+// Check if IP changed during session
+if (isLoggedIn() && $_SESSION['ip'] !== $_SERVER['REMOTE_ADDR']) {
+    logout();
 }
-*/
 
-if(isLoggedIn() && $_SESSION['ip'] != $_SERVER['REMOTE_ADDR']) logout();
+/**
+ * Check if session is started
+ */
+function is_session_started(): bool {
+    if (php_sapi_name() !== 'cli') {
+        if (version_compare(phpversion(), '5.4.0', '>=')) {
+            return session_status() === PHP_SESSION_ACTIVE;
+        }
+        return session_id() !== '';
+    }
+    return false;
+}
+
+/**
+ * Sanitize input data
+ */
+function sanitizeInput(string $data): string {
+    return htmlspecialchars(trim($data), ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Generate CSRF token
+ */
+function generateCSRFToken(): string {
+    if (!isset($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/**
+ * Verify CSRF token
+ */
+function verifyCSRFToken(string $token): bool {
+    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+}
+
+/**
+ * Set system information
+ * 
+ * @param string $key The key to set
+ * @param string $value The value to set
+ * @return bool Whether the operation was successful
+ */
+function setInfo(string $key, string $value): bool {
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("INSERT INTO system_info (key, data) VALUES (:key, :value) ON DUPLICATE KEY UPDATE data = :value");
+        $stmt->bindParam(":key", $key);
+        $stmt->bindParam(":value", $value);
+        return $stmt->execute();
+    } catch (PDOException $e) {
+        error_log("Failed to set system info: " . $e->getMessage());
+        return false;
+    }
+}
 ?>

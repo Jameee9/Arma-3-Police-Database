@@ -1,29 +1,43 @@
-<!doctype html>
 <?php
-require_once("php_includes/base.inc.php");
-if(!isLoggedIn()){
-	echo "You are not logged in... redirecting.";
-	redirect("login.php");
-	die();
-}
-$usr = getUser($_SESSION['uname'], U_UNAME);
-$cminfo = getInfo("cminfo");
-$cminfo = json_decode($cminfo['data'], true);
+declare(strict_types=1);
 
-if($usr['dept'] == PENDING) {
-	redirect("settings.php");
+require_once("php_includes/base.inc.php");
+
+// Check if user is logged in
+if (!isLoggedIn()) {
+	redirect("login.php");
+	exit();
+}
+
+try {
+	$usr = getUser($_SESSION['uname'], U_UNAME);
+	$cminfo = getInfo("cminfo");
+	$cminfo = json_decode($cminfo['data'] ?? '{}', true);
+
+	// Redirect pending users to settings
+	if ($usr['dept'] == PENDING) {
+		redirect("settings.php");
+		exit();
+	}
+} catch (Exception $e) {
+	error_log("Error in index.php: " . $e->getMessage());
+	die("An error occurred. Please try again later.");
 }
 ?>
+<!DOCTYPE html>
 <html lang="en-US">
 	<head>
 
 		<!-- Meta -->
 		<meta charset="UTF-8">
-		<title><?php echo $cminfo['pdn']; ?> Database</title>
-		<meta name="description" content="<?php echo $cminfo['pdn']; ?> - Criminal Database Homepage">
-		<meta name="author" content="Cole, Scott Harm (Retired)">
-		<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta http-equiv="X-UA-Compatible" content="IE=edge">
+		<meta name="description" content="<?php echo htmlspecialchars($cminfo['pdn'] ?? 'Police Database'); ?> - Criminal Database Homepage">
+		<meta name="author" content="Cole, Scott Harm (Retired)">
+		<meta name="robots" content="noindex, nofollow">
+		<meta name="referrer" content="same-origin">
+		
+		<title><?php echo htmlspecialchars($cminfo['pdn'] ?? 'Police Database'); ?> Database</title>
 
 		<!-- Favicons -->
 		<link rel="shortcut icon" href="img/favicons/favicon.png">
@@ -40,27 +54,26 @@ if($usr['dept'] == PENDING) {
 		<link rel="stylesheet" href="css/style.css">
 		<link rel="stylesheet" href="css/ticker.css">
 
-  		<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.4.4/jquery.min.js"></script>
-		<script type="text/javascript" src="js/tzselect.js"></script>
-		<script type="text/javascript">
-			$(document).ready(function () {
-			    var timezone = jstz.determine();
-			    response_text = 'UTC';
-			    if (typeof (timezone) === 'undefined'){
-			        response_text = 'UTC';
-			    }else{
-			        response_text = timezone.name();
-			    }
-			    document.cookie = "LSTZ=" + response_text;
+		<!-- JavaScript -->
+		<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+		<script src="js/tzselect.js"></script>
+		<script>
+			document.addEventListener('DOMContentLoaded', function() {
+				var timezone = jstz.determine();
+				let response_text = 'UTC';
+				if (typeof (timezone) !== 'undefined') {
+					response_text = timezone.name();
+				}
+				document.cookie = "LSTZ=" + response_text + "; path=/; secure; samesite=Lax";
 			});
 		</script>
 	</head>
 	<body>
 		<div id="overlay"></div>
 		<div id="top">
-			<a href="#" id="sidebar-button"></a>
+			<a href="#" id="sidebar-button" aria-label="Toggle Sidebar"></a>
 			<header id="logo">
-				<img src="img/logo.png" alt="Logo">
+				<img src="img/logo.png" alt="Logo" width="150" height="50">
 			</header>
 		</div>
 		<div id="main-wrapper">
@@ -69,34 +82,31 @@ if($usr['dept'] == PENDING) {
 				<div id="fullscreen-slider" class="swiper-container">
 					<div class="swiper-wrapper">
 						<div class="swiper-slide overlay overlay-dark-25 white" style="background-image: url(img/slides/front.png)">
-							<h1>Welcome to the <?php echo $cminfo['cmn']; ?> police database!<br>Build Version 1.1.2</h1>
+							<h1>Welcome to the <?php echo htmlspecialchars($cminfo['cmn'] ?? 'Police'); ?> police database!<br>Build Version 1.1.2</h1>
 							<?php
-							if($usr['dept'] != -1) {
+							if ($usr['dept'] != -1) {
 								$dname = explode(" ", $usr['display']);
-								$ln = count('dname');
-								echo "<br/><h2 style=\"color: black\">Welcome, ".getRankName($usr['id'])." ".$dname[$ln];
+								$ln = count($dname) - 1;
+								echo "<br/><h2 style=\"color: black\">Welcome, " . htmlspecialchars(getRankName($usr['id'])) . " " . htmlspecialchars($dname[$ln]) . "</h2>";
 							}
 							?>
-							
 						</div>
 					</div>
 				</div>
 			</div>
 			<?php require_once("sidebar.php"); ?>
-				<footer>
-					<p class="copyright">&copy; Copyright 2017 <a href="http://coltonbrister.com" target="_blank">Colton Brister</a></p>
-				</footer>
-			</div>
+			<footer>
+				<p class="copyright">&copy; Copyright <?php echo date('Y'); ?> <a href="https://www.jamee9.dev/" target="_blank" rel="noopener">Jamee9.Dev</a></p>
+			</footer>
 		</div>
 
 		<!-- JavaScripts -->
-		<script type='text/javascript' src='js/jquery.min.js'></script>
-		<script type='text/javascript' src='js/bootstrap.min.js'></script>
-		<script type='text/javascript' src='js/swiper/idangerous.swiper.min.js'></script>
-		<script type='text/javascript' src='js/masonry/masonry.pkgd.min.js'></script>
-		<script type='text/javascript' src='js/isotope/jquery.isotope.min.js'></script>
-		<script type='text/javascript' src='js/custom.js'></script>
-		<script type="text/javascript" src="js/ticker.js"></script>
+		<script src="js/bootstrap.min.js"></script>
+		<script src="js/swiper/idangerous.swiper.min.js"></script>
+		<script src="js/masonry/masonry.pkgd.min.js"></script>
+		<script src="js/isotope/jquery.isotope.min.js"></script>
+		<script src="js/custom.js"></script>
+		<script src="js/ticker.js"></script>
 
 	</body>
 </html>

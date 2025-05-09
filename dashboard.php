@@ -1,5 +1,6 @@
-<!doctype html>
 <?php
+declare(strict_types=1);
+
 ini_set('display_errors',1);
 ini_set('display_startup_errors',1);
 error_reporting(-1);
@@ -9,21 +10,46 @@ if(!hasPerm("pdcmd")){
 	die();
 }
 
-if(isset($_POST['emg'])) {
-	$t['level'] = $_POST['threat'];
-	setInfo("threat", json_encode($t));
-	unset($_POST['threat']);
-	setInfo("freqs", json_encode($_POST));
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+	if (!isset($_POST['csrf_token']) || !verifyCSRFToken($_POST['csrf_token'])) {
+		die("Invalid request");
+	}
+
+	try {
+		if(isset($_POST['emg'])) {
+			$t = [];
+			$t['level'] = filter_input(INPUT_POST, 'threat', FILTER_SANITIZE_NUMBER_INT);
+			setInfo("threat", json_encode($t));
+			unset($_POST['threat']);
+			setInfo("freqs", json_encode($_POST));
+		}
+
+		if (isset($_POST['text1'])) {
+			if (!empty($_POST['text1']) && $infot['text'] !== $_POST['text1']) {
+				setInfo("text", json_encode($_POST));
+				$infot['text'] = $_POST['text1'];
+			}
+		}
+		if (isset($_POST['link1'])) {
+			if (!empty($_POST['link1']) && $infol['links'] !== $_POST['link1']) {
+				setInfo("links", json_encode($_POST));
+				$infol['links'] = $_POST['link1'];
+			}
+		}
+	} catch (Exception $e) {
+		error_log("Error in dashboard.php: " . $e->getMessage());
+		die("An error occurred while processing your request.");
+	}
 }
 
 $infol = getInfo("links");
-$infol = json_decode($infol['data'], true);
+$infol = json_decode($infol['data'] ?? '{}', true);
 $infot = getInfo("text");
-$infot = json_decode($infot['data'], true);
+$infot = json_decode($infot['data'] ?? '{}', true);
 $info = getInfo("freqs");
-$info = json_decode($info['data'], true);
+$info = json_decode($info['data'] ?? '{}', true);
 $tinfo = getInfo("threat");
-$tinfo = json_decode($tinfo['data'], true);
+$tinfo = json_decode($tinfo['data'] ?? '{}', true);
 $stmt = $pdo->prepare("SELECT * FROM `arrests` WHERE `RealDate` > NOW() - INTERVAL 24 HOUR ORDER BY `id` DESC");
 $stmt->execute();
 $arrests = $stmt->fetchAll();
@@ -34,7 +60,7 @@ $stmt->execute();
 $infs = $stmt->fetchAll();
 $infracs = count($infs);
 $cminfo = getInfo("cminfo");
-$cminfo = json_decode($cminfo['data'], true);
+$cminfo = json_decode($cminfo['data'] ?? '{}', true);
 
 $dtu = hasPerm("dtu");
 $cmd = hasPerm("pdcmd");
@@ -50,18 +76,6 @@ $pendingplace = $stmtspendTotal->fetchAll();
 $pndplcTotal = count($pendingplace);
 
 $cnt = count(copsByDept(PENDING))-1;
-
-if(isset($_POST['text1'])) {
-	if(!empty($_POST['text1']) && $infot['text'] != $_POST['text1']) {
-		setInfo("text", json_encode($_POST));
-		$infot['text'] = $_POST['text1'];
-	}
-if(isset($_POST['link1'])) 
-	if(!empty($_POST['link1']) && $infol['links'] != $_POST['link1']) {
-		setInfo("links", json_encode($_POST));
-		$infol['links'] = $_POST['link1'];
-	}
-}
 ?>
 
 <html lang="en-US">
@@ -103,7 +117,7 @@ if(isset($_POST['link1']))
 		</div>
 		
 		<div id="main-wrapper">
-			<?php require_once("boloTicker.php"); ?>
+			<?php require_once "boloTicker.php"; ?>
 			<div id="content">
 				<div class="container-fluid">
 					<div id="heading" class="row">
@@ -119,24 +133,26 @@ if(isset($_POST['link1']))
 						<div class="col-12">
 							<article class="inner">
 								<div class="row">
-                               		<form action="dashboard.php" method="post">
+                               		<form action="dashboard.php" method="post" class="needs-validation" novalidate>
+                                    <input type="hidden" name="csrf_token" value="<?php echo generateCSRFToken(); ?>">
                                     <div class="form-group col-6" style="border:double">
                                 	<div class="form-group col-4">
                                     	<h3>Police Freqs</h3>
                                     	<label for="fr1">Frequency 1:</label>
-											<input type="text" name="tac1" value="<?php echo $info['tac1']; ?>" class="form-control" id="fr1" style="width:75%">
+											<input type="text" name="tac1" value="<?php echo $info['tac1']; ?>" class="form-control" id="fr1" style="width:75%" required>
 										<label for="fr2">Frequency 2:</label>
-											<input type="text" name="tac2" value="<?php echo $info['tac2']; ?>" class="form-control" id="fr2" style="width:75%">
+											<input type="text" name="tac2" value="<?php echo $info['tac2']; ?>" class="form-control" id="fr2" style="width:75%" required>
                                         <label for="doc">DOC Frequency:</label>
-											<input type="text" name="doc1" value="<?php echo $info['doc1']; ?>" class="form-control" id="doc" style="width:75%">
+											<input type="text" name="doc1" value="<?php echo $info['doc1']; ?>" class="form-control" id="doc" style="width:75%" required>
 										<?php if(hasPerm("dtu")) { ?>
 										<label for="dtu">DTU Frequency:</label>
-											<input type="text" name="dtu" value="<?php  echo $info['dtu']; ?>" class="form-control" id="dtu" style="width:75%"> 
+											<input type="text" name="dtu" value="<?php  echo $info['dtu']; ?>" class="form-control" id="dtu" style="width:75%" required> 
 										<?php } ?>
                                         <label for="fr3">Emergency:</label>
-											<input type="text" style="width:75%" id="fr3" class="form-control" value="<?php echo $info['emg']; ?>" name="emg">
+											<input type="text" style="width:75%" id="fr3" class="form-control" value="<?php echo $info['emg']; ?>" name="emg" required>
                                         <div class="styled-select">
                                         <label>Active Frequency:</label>
+                                        <select style="width: 200px" name="active" required>
                                         <select style="width: 200px" name="active">
 												<option value="tac1" <?php if($info['active'] == "tac1") echo "selected"; ?>>Tac 1</option>
 												<option value="tac2" <?php if($info['active'] == "tac2") echo "selected"; ?>>Tac 2</option>
